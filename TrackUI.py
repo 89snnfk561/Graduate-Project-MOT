@@ -1,6 +1,6 @@
 
 from PyQt5.QtWidgets import QWidget, QApplication, QLabel, QFileDialog, QPushButton, QVBoxLayout, QMainWindow, QTableWidget, QDialog
-from PyQt5.QtCore import QRect, Qt, QLine, QTimer, QThread, pyqtSignal
+from PyQt5.QtCore import QRect, Qt, QLine, QTimer, QThread, pyqtSignal, QMutex
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen
 from PyQt5.uic import loadUi
 
@@ -272,15 +272,25 @@ class RunForm(QMainWindow):
         loadUi('./PythonGUI/RunWindow.ui', self)
         # 實例化線程
         self.work = WorkThread()
-        self.runButton.clicked.connect(self.execute)
+        self.runButton.clicked.connect(self.start_thread)
+        self.stopButton.clicked.connect(self.stop_thread)
 
-    def execute(self):
+    def start_thread(self):
         # 启动线程
         self.work.start()
         # 線程自訂議信號連接的槽函數
         self.work.trigger.connect(self.display)
+        self.work.trigger2.connect(self.line_display)
 
-    def display(self,str):
+    def stop_thread(self):
+        self.work.stop()
+
+    def display(self, str):
+        # 由于自定义信号时自动传递一个字符串参数，所以在这个槽函数中要接受一个参数
+        self.listWidget.addItem(str)
+        self.listWidget.scrollToBottom()
+
+    def line_display(self, str):
         # 由于自定义信号时自动传递一个字符串参数，所以在这个槽函数中要接受一个参数
         self.listWidget.addItem(str)
         self.listWidget.scrollToBottom()
@@ -289,22 +299,33 @@ class RunForm(QMainWindow):
 class WorkThread(QThread):
 
     trigger = pyqtSignal(str)
+    trigger2 = pyqtSignal(str)
+
 
     def __init__(self):
         super(WorkThread, self).__init__()
         self.text = ""
+        self._mutex = QMutex()
 
     def run(self):
         self.detect()
+
+    def stop(self):
+        self.setTerminationEnabled(True)
 
     def compute_color_for_labels(self, label):
         """
         Simple function that adds fixed color depending on the class
         """
+        self._mutex.lock()
+
         palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
         label %= 2 ** 5
         color = [int((p * (label ** 2 - label + 1)) % 255) for p in palette]
+        self._mutex.unlock()
         return tuple(color)
+
+
 
     def detect(self):
         # out, source, yolo_weights, deep_sort_weights, show_vid, save_vid, save_txt, imgsz, evaluate = \
@@ -317,7 +338,7 @@ class WorkThread(QThread):
             yolo_weights = 'yolov5/yolov5s.pt'
             deep_sort_weights = 'deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7'
             show_vid = True
-            save_vid = False
+            save_vid = True
             save_txt = False
             imgsz = 640
             evaluate = False
@@ -393,7 +414,7 @@ class WorkThread(QThread):
             txt_file_name = source.split('\\')[-1].split('.')[0]
             txt_path = str(Path(out)) + '\\' + txt_file_name + '.txt'
 
-            count = Counting(cls_names=names, classes=classes)
+            count = Counting(cls_names=names, classes=classes, lines=lines)
 
             for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
                 img = torch.from_numpy(img).to(device)
@@ -439,11 +460,11 @@ class WorkThread(QThread):
 
                         # pass detections to deepsort
                         outputs = deepsort.update(xywhs.cpu(), confs.cpu(), clss, im0)
-
                         count.ClearTrail(deepsort.tracker._next_id)
 
                         # draw boxes for visualization
                         if len(outputs) > 0:
+
                             for j, (output, conf) in enumerate(zip(outputs, confs)):
 
                                 bboxes = output[0:4]
@@ -458,6 +479,7 @@ class WorkThread(QThread):
 
                                 count.TrackTail(bbox=bboxes, track_id=id)
                                 count.DrawTrail(img=im0, track_id=id, color=color)
+                                count.updateCounting(cls=cls, track_id=id)
 
                                 if save_txt:
                                     # to MOT format
@@ -471,15 +493,24 @@ class WorkThread(QThread):
                                                                        bbox_left, bbox_w, bbox_h, -1, -1, -1,
                                                                        -1))  # label format
 
+                            count.TrackZero(track_ids=outputs[:, 4])
                     else:
                         deepsort.increment_ages()
 
+
+
                     # Print time (inference + NMS)
                     print('%sDone. (%.3fs)' % (s, t2 - t1))
+                    self.trigger.emit(str(s))
 
                     # Stream results
+                    count.DrawAllLine(canvas=im0, color=(0, 0, 255), color2=(255, 0, 0))
+                    count.printCounting(canvas=im0, color=(0, 0, 0))
                     im0 = annotator.result()
+
+
                     if show_vid:
+
                         cv2.imshow(p, im0)
                         if cv2.waitKey(1) == ord('q'):  # q to quit
                             raise StopIteration
@@ -500,6 +531,8 @@ class WorkThread(QThread):
 
                             vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                         vid_writer.write(im0)
+
+
 
             if save_txt or save_vid:
                 print('Results saved to %s' % os.getcwd() + os.sep + out)

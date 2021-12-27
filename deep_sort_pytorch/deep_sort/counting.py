@@ -2,6 +2,7 @@ import numpy as np
 import math
 import cv2
 from _collections import deque
+from PyQt5.QtCore import QMutex
 
 
 class Line:
@@ -115,7 +116,7 @@ class Group:
 
 class Counting:
 
-    def __init__(self, cls_names, classes):
+    def __init__(self, cls_names, classes, lines):
         self.Lines = []
         self.Groups = []
         self.n = 1000
@@ -124,6 +125,10 @@ class Counting:
         self.cls_names = cls_names
         self.classes = classes
         self.totalclass = len(cls_names)
+        self._mutex = QMutex()
+
+        for line in lines:
+            self.AddLine(line[0], line[1])
 
     def printAllLine(self):
         for line in self.Lines:
@@ -163,20 +168,25 @@ class Counting:
 
 
     def ClearTrail(self, _next_id):
+        self._mutex.lock()
         _next_id += 10
         for j in range(10):
             self.pts[(_next_id+j) % self.n].clear()
+        self._mutex.unlock()
 
     def DrawAllLine(self, canvas, color, color2):
-
+        self._mutex.lock()
         for line in self.Lines:
             if line in self.linesIntersection:
                 line.drawLine(canvas, color2)
             else:
                 line.drawLine(canvas, color)
+        self._mutex.unlock()
         self.linesIntersection.clear()
 
+
     def updateCounting(self, cls, track_id):
+
         track_id %= self.n
         for line in self.Lines:
             length = len(self.pts[track_id])
@@ -191,6 +201,7 @@ class Counting:
                             self.linesIntersection.append(line)
                         break
 
+
     def printCounting(self, canvas, color):
         for line in self.Lines:
             x, y = line.Counttext_position()
@@ -200,6 +211,13 @@ class Counting:
                 cv2.putText(canvas, s, (x, y), cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, color, 1)
                 y += 18
 
+    def stringCounting(self):
+        s = ""
+        for i, line in enumerate(self.Lines):
+            s += "line " + str(i) + "\n"
+            for text in line.Counttext():
+                s += "{:^9}: {:3}/{:3}\n".format(self.cls_names[text[0]], text[1], text[2])
+        return s
 
 
 
